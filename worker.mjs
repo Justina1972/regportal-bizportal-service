@@ -650,6 +650,40 @@ async function openResult(page, enterpriseNumber) {
 
   // Helper: get all frames including nested iframes
   const getAllFrames = () => [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+  const collectResultPageDiagnostics = async () => {
+    const diagnostics = [];
+
+    for (const frame of getAllFrames()) {
+      try {
+        const info = await frame.evaluate((enterpriseNumberArg) => {
+          const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+          const clickables = Array.from(document.querySelectorAll('a, button, input, img, td, div[role="button"], span[role="button"]'))
+            .map((el) => {
+              const text = (el.textContent || el.value || el.getAttribute('title') || el.getAttribute('aria-label') || el.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+              const href = (el.getAttribute('href') || '').trim();
+              const onclick = (el.getAttribute('onclick') || '').replace(/\s+/g, ' ').trim();
+              return { tag: el.tagName, text, href, onclick };
+            })
+            .filter((item) => item.text || item.href || item.onclick)
+            .filter((item) => /view|details|profile|select|__dopostback|registered/i.test(`${item.text} ${item.href} ${item.onclick}`))
+            .slice(0, 12);
+
+          return {
+            url: location.href,
+            title: document.title,
+            containsEnterprise: bodyText.includes(enterpriseNumberArg),
+            snippet: bodyText.slice(0, 350),
+            clickables,
+          };
+        }, enterpriseNumber);
+        diagnostics.push(info);
+      } catch {
+        // Ignore inaccessible frames.
+      }
+    }
+
+    return diagnostics;
+  };
   const resultWaitMs = envNumber('REGPORTAL_BIZPORTAL_RESULTS_WAIT_MS', 35000);
   debugLog('result_wait_ms=', String(resultWaitMs));
 
@@ -729,13 +763,13 @@ async function openResult(page, enterpriseNumber) {
           return `clicked:${chosen.tagName}#${chosen.id || chosen.getAttribute('name') || '?'}`;
         };
 
-        const rows = Array.from(document.querySelectorAll('tr'));
+        const rows = Array.from(document.querySelectorAll('tr, [role="row"], .rgRow, .rgAltRow, .grid-row'));
         const matchingRows = rows.filter((row) => {
           const text = (row.textContent || '').replace(/\s+/g, ' ').toUpperCase();
           const hasEnterprise = text.includes(enterpriseNumberArg);
           const hasRegistered = /REGISTERED/i.test(text);
           const hasCells = row.querySelectorAll('td').length >= 2;
-          return hasCells && (hasEnterprise ? hasRegistered : hasRegistered);
+          return hasCells && (hasEnterprise || hasRegistered);
         });
 
         for (const row of matchingRows) {
@@ -752,6 +786,23 @@ async function openResult(page, enterpriseNumber) {
           const imageTarget = row.querySelector('td img, a img, img[onclick], img[style], img[src]');
           if (imageTarget) {
             const resultText = clickTarget(imageTarget);
+            if (resultText) return resultText;
+          }
+
+          const explicitViewTarget = row.querySelector([
+            'a[title*="View" i]',
+            'a[aria-label*="View" i]',
+            'a[href*="View" i]',
+            'a[href*="__doPostBack" i]',
+            'a[onclick*="__doPostBack" i]',
+            'button[title*="View" i]',
+            'input[value*="View" i]',
+            'input[title*="View" i]',
+            '[onclick*="View" i]',
+            '[onclick*="Details" i]'
+          ].join(','));
+          if (explicitViewTarget) {
+            const resultText = clickTarget(explicitViewTarget);
             if (resultText) return resultText;
           }
 
@@ -886,7 +937,13 @@ async function openResult(page, enterpriseNumber) {
       return;
     }
 
-    throw new Error('Unable to find the BizPortal View action for the search result. Check bizportal-results.png for page state.');
+    const diagnostics = await collectResultPageDiagnostics();
+    const summary = diagnostics.map((item, index) => {
+      const clickables = item.clickables.map((entry) => `${entry.tag}:${entry.text || entry.href || entry.onclick}`).join(' | ');
+      return `frame${index + 1} title=${item.title} containsEnterprise=${item.containsEnterprise} snippet=${item.snippet} clickables=${clickables}`;
+    }).join(' || ');
+
+    throw new Error(`Unable to find the BizPortal View action for the search result. ${summary}`);
   }
 
   debugLog('step=view_clicked');
