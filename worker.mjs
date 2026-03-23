@@ -379,6 +379,55 @@ async function login(page, username, password, loginMode) {
 async function navigateToEntitySearch(page) {
   debugLog('step=navigate_entity_search_start', 'url=', page.url());
 
+  const isBizProfilePage = async () => {
+    try {
+      return await page.evaluate(() => {
+        const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
+        return /bizprofile is a search tool for all cipc registered entities/i.test(text)
+          || /type in your search query/i.test(text)
+          || /select search option/i.test(text)
+          || /enterprise number/i.test(text);
+      });
+    } catch {
+      return false;
+    }
+  };
+
+  const openBizProfilePage = async () => {
+    const bizProfileLink = await firstVisibleLocatorInFrames(page, [
+      'a[href*="bizprofile.aspx"]',
+      'a:has-text("BizProfile")',
+      'input[value*="PROFILE" i]',
+      'input[value*="BIZPROFILE" i]'
+    ]);
+
+    if (bizProfileLink) {
+      try {
+        await bizProfileLink.click({ force: true, timeout: 4000 });
+      } catch {
+        try {
+          await bizProfileLink.evaluate((node) => node.click());
+        } catch {
+          // Ignore and fall back to direct navigation.
+        }
+      }
+    }
+
+    if (!(await isBizProfilePage())) {
+      try {
+        await page.goto('https://www.bizportal.gov.za/bizprofile.aspx', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      } catch {
+        // Ignore direct navigation failures; subsequent checks will surface them.
+      }
+    }
+
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 8000 });
+    } catch {
+      await page.waitForTimeout(2000);
+    }
+  };
+
   // First try clicking the search/magnifying-glass icon in the nav
   const openedSearch = await clickFirstVisible(page, [
     'a[href*="bizprofile.aspx"]',
@@ -415,6 +464,12 @@ async function navigateToEntitySearch(page) {
     debugLog('step=after_entity_search_wait', 'url=', page.url());
   }
 
+  if (await page.locator('a[href*="bizprofile.aspx" i], a:has-text("BizProfile")').count().catch(() => 0)) {
+    debugLog('step=home_page_contains_bizprofile_link');
+    await openBizProfilePage();
+    debugLog('step=after_explicit_bizprofile_open', 'url=', page.url());
+  }
+
   // If we still don't see a search input, try navigating directly to known search URLs
   const hasSearchInput = await page.locator('input[type="text"]').count();
   if (!openedSearch && !openedEntitySearch && hasSearchInput === 0) {
@@ -426,6 +481,11 @@ async function navigateToEntitySearch(page) {
     } catch (err) {
       debugLog('step=direct_nav_failed', String(err.message));
     }
+  }
+
+  if (!(await isBizProfilePage())) {
+    debugLog('step=force_bizprofile_page');
+    await openBizProfilePage();
   }
 
   debugLog('step=navigate_entity_search_done', 'url=', page.url());
