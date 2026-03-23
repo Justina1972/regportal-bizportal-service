@@ -273,6 +273,44 @@ async function resolveLoginButtonLocator(page) {
   ]);
 }
 
+async function readLoginFailureDetails(page) {
+  const details = await page.evaluate(() => {
+    const selectors = [
+      '.validation-summary-errors',
+      '.validation-summary-valid',
+      '.field-validation-error',
+      '.text-danger',
+      '.alert',
+      '.alert-danger',
+      '.error',
+      '.message',
+      '#lblError',
+      '#cntMain_lblError',
+      'span[id*="Error"]',
+      'div[id*="Error"]'
+    ];
+
+    const messages = [];
+    for (const selector of selectors) {
+      for (const node of Array.from(document.querySelectorAll(selector))) {
+        const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text !== '' && !messages.includes(text)) {
+          messages.push(text);
+        }
+      }
+    }
+
+    const bodySnippet = (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    return {
+      messages,
+      bodySnippet,
+      title: (document.title || '').trim(),
+    };
+  });
+
+  return details;
+}
+
 async function login(page, username, password, loginMode) {
   const visibleTyping = !envFlag('REGPORTAL_BIZPORTAL_HEADLESS', true);
 
@@ -322,13 +360,19 @@ async function login(page, username, password, loginMode) {
   debugLog('step=post_login_wait_done', 'url=', page.url());
 
   if (page.url().toLowerCase().includes('login.aspx')) {
-    const bodyText = await page.locator('body').innerText();
+    const details = await readLoginFailureDetails(page);
+    const bodyText = details.bodySnippet || await page.locator('body').innerText();
     debugLog('still_on_login_page=true');
-    if (/password required|invalid|login/i.test(bodyText)) {
-      throw new Error('BizPortal login appears to have failed. Verify the configured credentials and login mode.');
+    if (details.messages.length > 0) {
+      debugLog('login_failure_messages=', details.messages.join(' || '));
+    }
+    if (/password required|invalid|login|id number|customer code|incorrect|unsuccessful/i.test(bodyText)) {
+      const reason = details.messages[0] || bodyText.replace(/\s+/g, ' ').trim().slice(0, 220);
+      throw new Error(`BizPortal login failed: ${reason}`);
     }
 
-    throw new Error('BizPortal remained on login page after submit. Enable REGPORTAL_BIZPORTAL_DEBUG=1 and verify login mode/fields for this account variant.');
+    const fallbackReason = details.messages[0] || bodyText.replace(/\s+/g, ' ').trim().slice(0, 220);
+    throw new Error(`BizPortal remained on login page after submit. Page said: ${fallbackReason}`);
   }
 }
 
