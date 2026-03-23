@@ -577,6 +577,28 @@ async function setSearchMode(page) {
       }
     }
 
+    // --- Try clickable text controls / custom widgets ---
+    const clickableCandidates = Array.from(document.querySelectorAll('label, button, a, span, div, li'));
+    for (const candidate of clickableCandidates) {
+      const text = (candidate.textContent || '').trim().toLowerCase();
+      if (!/enterprise\s*(no|num|number)|registration\s*(no|num|number)|reg\s*no/i.test(text)) {
+        continue;
+      }
+
+      const rect = candidate.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        continue;
+      }
+
+      if (typeof candidate.click === 'function') {
+        candidate.click();
+      } else {
+        candidate.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      }
+
+      return { status: 'clicked_text_control', allOptions, allRadios, pageSnippet: text.slice(0, 120) };
+    }
+
     // Dump all text on page for diagnosis when nothing found
     const pageSnippet = (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 400);
     return { status: 'not_found', allOptions, allRadios, pageSnippet };
@@ -597,13 +619,9 @@ async function setSearchMode(page) {
     debugLog('page_text_snippet=', result.pageSnippet);
   }
 
-  if (result.status === 'changed' || result.status === 'radio_clicked') {
+  if (result.status === 'changed' || result.status === 'radio_clicked' || result.status === 'clicked_text_control') {
     // ASP.NET AutoPostBack triggers a page reload; wait for it to settle
-    try {
-      await page.waitForLoadState('networkidle', { timeout: 6000 });
-    } catch {
-      await page.waitForTimeout(1500);
-    }
+    await waitForPageStability(page, 7000);
   }
 }
 
@@ -632,6 +650,7 @@ async function searchEnterprise(page, enterpriseNumber) {
   const frames = [page.mainFrame(), ...page.frames().filter((frame) => frame !== page.mainFrame())];
   let filled = false;
   let filledSelector = '';
+  let filledLocator = null;
 
   for (const frame of frames) {
     for (const selector of searchInputSelectors) {
@@ -664,6 +683,7 @@ async function searchEnterprise(page, enterpriseNumber) {
       if (val.trim() === enterpriseNumber) {
         filled = true;
         filledSelector = selector;
+        filledLocator = locator;
         break;
       }
     }
@@ -731,14 +751,44 @@ async function searchEnterprise(page, enterpriseNumber) {
     throw new Error('Unable to find the BizPortal search button.');
   }
 
-  await searchBtnLocator.click();
+  try {
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => null),
+      searchBtnLocator.click()
+    ]);
+  } catch {
+    await searchBtnLocator.click({ force: true });
+  }
   debugLog('step=click_search_done');
 
-  try {
-    await page.waitForLoadState('networkidle', { timeout: 15000 });
-  } catch {
-    await page.waitForTimeout(3000);
+  await waitForPageStability(page, 15000);
+
+  let bodyAfterSearch = await safePageEvaluate(page, () => (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500)).catch(() => '');
+  if (!new RegExp(enterpriseNumber, 'i').test(bodyAfterSearch) && /type in your search query|select search option|bizprofile is a search tool/i.test(bodyAfterSearch)) {
+    debugLog('step=search_retry_enter_key');
+    if (filledLocator) {
+      try {
+        await filledLocator.press('Enter');
+      } catch {
+        try {
+          await filledLocator.evaluate((el) => {
+            const form = el.closest('form');
+            if (form) {
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+              if (typeof form.submit === 'function') {
+                form.submit();
+              }
+            }
+          });
+        } catch {
+          // Ignore retry failure; later diagnostics will surface page state.
+        }
+      }
+      await waitForPageStability(page, 12000);
+      bodyAfterSearch = await safePageEvaluate(page, () => (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500)).catch(() => '');
+    }
   }
+
   debugLog('step=search_results_loaded', 'url=', page.url());
 }
 
