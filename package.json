@@ -6,7 +6,8 @@
   "description": "Backend BizPortal sync worker for RegPortal annual returns",
   "scripts": {
     "bizportal:sync": "node worker.mjs",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "postinstall": "npx playwright install chromium --with-deps"
   },
   "dependencies": {
     "playwright": "^1.52.0"
