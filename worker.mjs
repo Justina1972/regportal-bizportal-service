@@ -447,10 +447,23 @@ async function navigateToEntitySearch(page) {
     try {
       return await safePageEvaluate(page, () => {
         const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
-        return /bizprofile is a search tool for all cipc registered entities/i.test(text)
-          || /type in your search query/i.test(text)
-          || /select search option/i.test(text)
-          || /enterprise number/i.test(text);
+        const url = String(window.location.href || '').toLowerCase();
+        const hasSearchInput = Array.from(document.querySelectorAll('input[type="text"], input[type="search"]'))
+          .some((el) => {
+            const placeholder = String(el.getAttribute('placeholder') || '').toLowerCase();
+            const name = String(el.getAttribute('name') || '').toLowerCase();
+            const id = String(el.getAttribute('id') || '').toLowerCase();
+            return /search query|enterprise|registration/.test(`${placeholder} ${name} ${id}`);
+          });
+        const hasSearchButton = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'))
+          .some((el) => /search|find|go/i.test((el.textContent || el.value || '').trim()));
+        const hasOptionSelector = document.querySelectorAll('select, input[type="radio"]').length > 0
+          || /select search option|enterprise number|registration number/i.test(text);
+
+        return (url.includes('bizprofile.aspx') || url.includes('bizprofile'))
+          && hasSearchInput
+          && hasSearchButton
+          && hasOptionSelector;
       });
     } catch {
       return false;
