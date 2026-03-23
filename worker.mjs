@@ -91,6 +91,50 @@ function resolveBrowserPath() {
   return '';
 }
 
+function isNavigationContextError(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /execution context was destroyed|most likely because of a navigation|cannot find context with specified id/i.test(message);
+}
+
+async function waitForPageStability(page, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      await page.waitForLoadState('domcontentloaded', { timeout: 3000 });
+      await page.locator('body').first().waitFor({ state: 'attached', timeout: 2000 });
+      try {
+        await page.waitForLoadState('networkidle', { timeout: 3000 });
+      } catch {
+        await page.waitForTimeout(500);
+      }
+      return;
+    } catch (error) {
+      if (!isNavigationContextError(error)) {
+        break;
+      }
+      await page.waitForTimeout(500);
+    }
+  }
+
+  await page.waitForTimeout(1000);
+}
+
+async function safePageEvaluate(page, evaluator, arg, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      return await page.evaluate(evaluator, arg);
+    } catch (error) {
+      if (!isNavigationContextError(error) || attempt === retries - 1) {
+        throw error;
+      }
+      await waitForPageStability(page, 6000);
+    }
+  }
+
+  return null;
+}
+
 async function clickFirstVisible(page, selectors, options = {}) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
@@ -381,7 +425,7 @@ async function navigateToEntitySearch(page) {
 
   const isBizProfilePage = async () => {
     try {
-      return await page.evaluate(() => {
+      return await safePageEvaluate(page, () => {
         const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
         return /bizprofile is a search tool for all cipc registered entities/i.test(text)
           || /type in your search query/i.test(text)
@@ -403,7 +447,10 @@ async function navigateToEntitySearch(page) {
 
     if (bizProfileLink) {
       try {
-        await bizProfileLink.click({ force: true, timeout: 4000 });
+        await Promise.all([
+          page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => null),
+          bizProfileLink.click({ force: true, timeout: 4000 })
+        ]);
       } catch {
         try {
           await bizProfileLink.evaluate((node) => node.click());
@@ -413,6 +460,8 @@ async function navigateToEntitySearch(page) {
       }
     }
 
+    await waitForPageStability(page, 10000);
+
     if (!(await isBizProfilePage())) {
       try {
         await page.goto('https://www.bizportal.gov.za/bizprofile.aspx', { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -421,11 +470,7 @@ async function navigateToEntitySearch(page) {
       }
     }
 
-    try {
-      await page.waitForLoadState('networkidle', { timeout: 8000 });
-    } catch {
-      await page.waitForTimeout(2000);
-    }
+    await waitForPageStability(page, 10000);
   };
 
   // First try clicking the search/magnifying-glass icon in the nav
@@ -492,7 +537,7 @@ async function navigateToEntitySearch(page) {
 }
 
 async function setSearchMode(page) {
-  const result = await page.evaluate(() => {
+  const result = await safePageEvaluate(page, () => {
     // --- Try dropdown select ---
     const selects = Array.from(document.querySelectorAll('select'));
     const allOptions = [];
