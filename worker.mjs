@@ -471,11 +471,20 @@ async function navigateToEntitySearch(page) {
   };
 
   const openBizProfilePage = async () => {
+    // Direct URL navigation is the most reliable way to avoid clicking unrelated controls.
+    try {
+      await page.goto('https://www.bizportal.gov.za/bizprofile.aspx', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await waitForPageStability(page, 10000);
+      if (await isBizProfilePage()) {
+        return;
+      }
+    } catch {
+      // Fall through to link-click fallback.
+    }
+
     const bizProfileLink = await firstVisibleLocatorInFrames(page, [
       'a[href*="bizprofile.aspx"]',
-      'a:has-text("BizProfile")',
-      'input[value*="PROFILE" i]',
-      'input[value*="BIZPROFILE" i]'
+      'a:has-text("BizProfile")'
     ]);
 
     if (bizProfileLink) {
@@ -684,6 +693,7 @@ async function searchEnterprise(page, enterpriseNumber) {
   let filled = false;
   let filledSelector = '';
   let filledLocator = null;
+  let filledFrame = null;
 
   for (const frame of frames) {
     for (const selector of searchInputSelectors) {
@@ -717,6 +727,7 @@ async function searchEnterprise(page, enterpriseNumber) {
         filled = true;
         filledSelector = selector;
         filledLocator = locator;
+        filledFrame = frame;
         break;
       }
     }
@@ -760,18 +771,51 @@ async function searchEnterprise(page, enterpriseNumber) {
   debugLog('step=fill_enterprise_done');
 
   debugLog('step=click_search_start');
-  const searchBtnLocator = await firstVisibleLocatorInFrames(page, [
+  const buttonSelectors = [
     '#cntMain_btnSearch',
     '#cntMain_btnFind',
     '#cntMain_btnGo',
+    'button:has-text("Search")',
+    'button:has-text("SEARCH")',
+    'button:has-text("Find")',
     'input[type="submit"][value*="Search" i]',
     'input[type="submit"][value*="Find" i]',
-    'button[type="submit"]',
-    'button:has-text("Search")',
-    'button:has-text("Find")',
     'input[type="button"][value*="Search" i]',
     'a:has-text("Search")'
-  ]);
+  ];
+
+  let searchBtnLocator = null;
+  const framesToSearch = [filledFrame, ...[page.mainFrame(), ...page.frames().filter((frame) => frame !== page.mainFrame())]]
+    .filter((frame, index, self) => frame && self.indexOf(frame) === index);
+
+  for (const frame of framesToSearch) {
+    let found = false;
+    for (const selector of buttonSelectors) {
+      const locator = frame.locator(selector).first();
+      if (await locator.count().catch(() => 0) === 0) {
+        continue;
+      }
+      if (!(await locator.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      const label = await locator.evaluate((el) => {
+        return String(el.textContent || el.value || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim().toLowerCase();
+      }).catch(() => '');
+
+      if (/subscribe|chat|send message|profile$|kwebo/.test(label)) {
+        continue;
+      }
+
+      searchBtnLocator = locator;
+      found = true;
+      break;
+    }
+
+    if (found) {
+      break;
+    }
+  }
 
   if (!searchBtnLocator) {
     // Last resort: dump all visible buttons/submits for debugging
