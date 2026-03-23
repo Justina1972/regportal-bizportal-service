@@ -7,7 +7,7 @@
   "scripts": {
     "bizportal:sync": "node worker.mjs",
     "start": "node server.mjs",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install chromium chromium-headless-shell"
   },
   "dependencies": {
     "playwright": "^1.52.0"

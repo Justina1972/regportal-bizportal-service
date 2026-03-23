@@ -1202,10 +1202,12 @@ async function main() {
   const launchOptions = {
     headless: envFlag('REGPORTAL_BIZPORTAL_HEADLESS', true),
     slowMo: slowMoMs,
+    channel: 'chromium',
   };
 
   if (browserPath !== '') {
     launchOptions.executablePath = browserPath;
+    delete launchOptions.channel;
   }
 
   const browser = await chromium.launch(launchOptions);
