@@ -93,7 +93,7 @@ function resolveBrowserPath() {
 
 function isNavigationContextError(error) {
   const message = error instanceof Error ? error.message : String(error || '');
-  return /execution context was destroyed|most likely because of a navigation|cannot find context with specified id/i.test(message);
+  return /execution context was destroyed|most likely because of a navigation|cannot find context with specified id|frame was detached|navigation interrupted/i.test(message);
 }
 
 async function waitForPageStability(page, timeoutMs = 12000) {
@@ -120,7 +120,7 @@ async function waitForPageStability(page, timeoutMs = 12000) {
   await page.waitForTimeout(1000);
 }
 
-async function safePageEvaluate(page, evaluator, arg, retries = 3) {
+async function safePageEvaluate(page, evaluator, arg, retries = 5) {
   for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
       return await page.evaluate(evaluator, arg);
@@ -129,6 +129,26 @@ async function safePageEvaluate(page, evaluator, arg, retries = 3) {
         throw error;
       }
       await waitForPageStability(page, 6000);
+    }
+  }
+
+  return null;
+}
+
+async function safeFrameEvaluate(frame, evaluator, arg, retries = 5) {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      return await frame.evaluate(evaluator, arg);
+    } catch (error) {
+      if (!isNavigationContextError(error) || attempt === retries - 1) {
+        throw error;
+      }
+
+      try {
+        await waitForPageStability(frame.page(), 6000);
+      } catch {
+        // Ignore wait failures and retry frame evaluation.
+      }
     }
   }
 
@@ -318,7 +338,7 @@ async function resolveLoginButtonLocator(page) {
 }
 
 async function readLoginFailureDetails(page) {
-  const details = await page.evaluate(() => {
+  const details = await safePageEvaluate(page, () => {
     const selectors = [
       '.validation-summary-errors',
       '.validation-summary-valid',
@@ -742,7 +762,7 @@ async function searchEnterprise(page, enterpriseNumber) {
 
   if (!searchBtnLocator) {
     // Last resort: dump all visible buttons/submits for debugging
-    const btns = await page.evaluate(() => {
+    const btns = await safePageEvaluate(page, () => {
       return Array.from(document.querySelectorAll('input[type=submit],input[type=button],button'))
         .filter((el) => el.offsetParent !== null)
         .map((el) => `${el.tagName}#${el.id}[value=${el.value}][text=${el.textContent.trim().slice(0,30)}]`);
@@ -810,7 +830,7 @@ async function openResult(page, enterpriseNumber) {
 
     for (const frame of getAllFrames()) {
       try {
-        const info = await frame.evaluate((enterpriseNumberArg) => {
+        const info = await safeFrameEvaluate(frame, (enterpriseNumberArg) => {
           const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
           const clickables = Array.from(document.querySelectorAll('a, button, input, img, td, div[role="button"], span[role="button"]'))
             .map((el) => {
@@ -844,7 +864,7 @@ async function openResult(page, enterpriseNumber) {
 
   // If we already landed on the detail page, skip result clicking.
   for (const frame of getAllFrames()) {
-    const alreadyOnDetail = await frame.evaluate(() => {
+    const alreadyOnDetail = await safeFrameEvaluate(frame, () => {
       const text = (document.body?.textContent || '').replace(/\s+/g, ' ');
       return /auditor\s*&\s*annual\s*return\s*details/i.test(text);
     }).catch(() => false);
@@ -861,7 +881,7 @@ async function openResult(page, enterpriseNumber) {
   while (Date.now() < waitDeadline) {
     for (const frame of getAllFrames()) {
       try {
-        const hasIt = await frame.evaluate((enterpriseNumberArg) => {
+        const hasIt = await safeFrameEvaluate(frame, (enterpriseNumberArg) => {
           const text = document.body ? document.body.textContent || '' : '';
           return text.includes(enterpriseNumberArg) || /registered/i.test(text);
         }, enterpriseNumber);
@@ -878,7 +898,7 @@ async function openResult(page, enterpriseNumber) {
     for (let fi = 0; fi < getAllFrames().length; fi++) {
       const frame = getAllFrames()[fi];
       try {
-        const dump = await frame.evaluate(() => {
+        const dump = await safeFrameEvaluate(frame, () => {
           return Array.from(document.querySelectorAll('a, button, input[type=image], input[type=submit], img, td'))
             .map((el) => {
               const text = (el.textContent || el.value || el.alt || el.title || '').trim().replace(/\s+/g, ' ').slice(0, 40);
@@ -903,7 +923,7 @@ async function openResult(page, enterpriseNumber) {
   for (const frame of framesToTry) {
     if (clicked) break;
     try {
-      const result = await frame.evaluate((enterpriseNumberArg) => {
+      const result = await safeFrameEvaluate(frame, (enterpriseNumberArg) => {
         const clickTarget = (target) => {
           if (!target) return null;
           const clickableAncestor = target.closest('a, button, td, tr');
@@ -1082,7 +1102,7 @@ async function openResult(page, enterpriseNumber) {
 
   if (!clicked) {
     // Last fallback: continue when annual-return details are already in DOM/text.
-    const hasAnnualDataAlready = await Promise.all(getAllFrames().map((frame) => frame.evaluate(() => {
+    const hasAnnualDataAlready = await Promise.all(getAllFrames().map((frame) => safeFrameEvaluate(frame, () => {
       const text = (document.body?.textContent || '').replace(/\s+/g, ' ');
       return /Outstanding Annual Returns?|AR\s+Year|AR\s+Non-Compliance\s+Date|Auditor\s*&\s*Annual\s*Return\s*Details/i.test(text);
     }).catch(() => false))).then((flags) => flags.some(Boolean));
@@ -1128,7 +1148,7 @@ async function expandAnnualReturnSection(page) {
 
   const sectionIsOpen = async (frame) => {
     try {
-      return await frame.evaluate(() => {
+      return await safeFrameEvaluate(frame, () => {
         const text = (document.body?.textContent || '').replace(/\u00a0/g, ' ');
         return /Outstanding Annual Returns?/i.test(text) || /AR\s+Non-Compliance\s+Date/i.test(text);
       });
@@ -1139,7 +1159,7 @@ async function expandAnnualReturnSection(page) {
 
   const forceRevealSection = async (frame) => {
     try {
-      return await frame.evaluate(() => {
+      return await safeFrameEvaluate(frame, () => {
         const headerPattern = /auditor\s*&\s*annual\s*return\s*details/i;
         const headers = Array.from(document.querySelectorAll('div,button,a,li,span,h1,h2,h3,h4,h5'));
         const header = headers.find((el) => headerPattern.test((el.textContent || '').replace(/\s+/g, ' ')));
@@ -1327,7 +1347,7 @@ async function extractOutstandingAnnualReturns(page) {
 
   for (const frame of frames) {
     try {
-      const extracted = await frame.evaluate(() => {
+      const extracted = await safeFrameEvaluate(frame, () => {
         const text = (document.body.textContent || '').replace(/\u00a0/g, ' ');
 
         // Generic table scan fallback for pages where section visibility/state is unreliable.
