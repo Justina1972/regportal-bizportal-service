@@ -1,0 +1,14 @@
+{
+  "name": "regportal-bizportal-sync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Backend BizPortal sync worker for RegPortal annual returns",
+  "scripts": {
+    "bizportal:sync": "node worker.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
