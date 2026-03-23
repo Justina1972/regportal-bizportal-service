@@ -6,8 +6,7 @@
   "description": "Backend BizPortal sync worker for RegPortal annual returns",
   "scripts": {
     "bizportal:sync": "node worker.mjs",
-    "start": "node server.mjs",
-    "postinstall": "playwright install chromium chromium-headless-shell"
+    "start": "node ensure-playwright.mjs && node server.mjs"
   },
   "dependencies": {
     "playwright": "^1.52.0"
